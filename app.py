@@ -160,27 +160,69 @@ if "code" in _qp and "credentials" not in st.session_state:
 
 # ── PDF helpers ───────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False, max_entries=5)
-def pdf_to_pngs(pdf_bytes: bytes, dpi: int = 150) -> list:
-    images = convert_from_bytes(pdf_bytes, dpi=dpi)
-    result = []
-    for img in images:
-        buf = BytesIO()
-        img.save(buf, format="PNG")
-        result.append(buf.getvalue())
-    return result
+def pdf_to_data(pdf_bytes: bytes, dpi: int = 150):
+    """Returns (pdf_html: str, preview_pngs: list[bytes])"""
+    import re
+    # HTML via PyMuPDF (testo reale con colori e stili)
+    try:
+        import fitz
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        pages_html = []
+        for page in doc:
+            pages_html.append(page.get_text("html"))
+        doc.close()
+        body = '<hr style="border:none;border-top:1px solid #e0e0e0;margin:24px 0;">'.join(pages_html)
+        # Rimuovi dichiarazioni HTML/body delle singole pagine
+        body = re.sub(r'</?html[^>]*>', '', body, flags=re.IGNORECASE)
+        body = re.sub(r'</?body[^>]*>', '', body, flags=re.IGNORECASE)
+        body = re.sub(r'</?head[^>]*>.*?</head>', '', body, flags=re.IGNORECASE | re.DOTALL)
+        pdf_html = body.strip()
+    except Exception:
+        pdf_html = "<p><em>Impossibile estrarre testo dal PDF.</em></p>"
+
+    # PNG per anteprima nell'app
+    pngs = []
+    if PDF2IMAGE_OK:
+        try:
+            images = convert_from_bytes(pdf_bytes, dpi=dpi)
+            for img in images:
+                buf = BytesIO()
+                img.save(buf, format="PNG")
+                pngs.append(buf.getvalue())
+        except Exception:
+            pass
+
+    return pdf_html, pngs
 
 
-def build_html(n_pages: int) -> str:
-    imgs = "".join(
-        f'<div style="margin-bottom:6px;text-align:center;">'
-        f'<img src="cid:pg{i}" style="max-width:800px;width:100%;display:block;margin:0 auto;"></div>'
-        for i in range(n_pages)
-    )
+def build_full_email(pdf_html: str, nome1: str, nome2: str,
+                     note: str, include_note: bool) -> str:
+    """Assembla HTML email completa con saluto personalizzato + corpo PDF."""
+    names = [n for n in [nome1.strip(), nome2.strip()]
+             if n and n.lower() not in ("nan", "none", "")]
+    if len(names) >= 2:
+        saluto = f"Cari {names[0]} e {names[1]},"
+    elif names:
+        saluto = f"Caro/a {names[0]},"
+    else:
+        saluto = ""
+
+    header = ""
+    if saluto:
+        header += (f'<p style="font-family:Arial,sans-serif;font-size:15px;'
+                   f'margin:0 0 10px 0;">{saluto}</p>')
+    if include_note and note:
+        header += (f'<p style="font-family:Arial,sans-serif;font-size:14px;'
+                   f'color:#444;margin:0 0 16px 0;">{note}</p>')
+    if header:
+        header += '<hr style="border:none;border-top:2px solid #c0392b;margin:16px 0 20px 0;">'
+
     return (
-        '<html><body style="margin:0;padding:16px 24px;background:#ffffff;'
-        'font-family:Arial,sans-serif;">'
-        + imgs
-        + "</body></html>"
+        '<html><head><meta charset="utf-8"></head>'
+        '<body style="font-family:Arial,sans-serif;max-width:800px;'
+        'margin:0 auto;padding:20px;background:#ffffff;">'
+        + header + pdf_html +
+        '</body></html>'
     )
 
 
@@ -189,8 +231,7 @@ def build_mime_message(
     to_list: list,
     bcc_list: list,
     subject: str,
-    html_body: str,
-    page_pngs: list,
+    html_body: str,          # HTML già personalizzato per questo destinatario
     attachments: list,       # [(filename, bytes), ...]
 ) -> str:
     root = MIMEMultipart("mixed")
@@ -198,17 +239,7 @@ def build_mime_message(
     if bcc_list:
         root["Bcc"] = ", ".join(bcc_list)
     root["Subject"] = subject
-
-    related = MIMEMultipart("related")
-    related.attach(MIMEText(html_body, "html", "utf-8"))
-
-    for i, png_bytes in enumerate(page_pngs):
-        img = MIMEImage(png_bytes, "png")
-        img.add_header("Content-ID", f"<pg{i}>")
-        img.add_header("Content-Disposition", "inline")
-        related.attach(img)
-
-    root.attach(related)
+    root.attach(MIMEText(html_body, "html", "utf-8"))
 
     for fname, fbytes in attachments:
         part = MIMEBase("application", "octet-stream")
@@ -352,20 +383,17 @@ main_pdf_file = st.file_uploader(
     label_visibility="collapsed",
 )
 
-page_pngs: list = []
-html_body: str = ""
+pdf_html: str = ""
+preview_pngs: list = []
 
 if main_pdf_file:
-    if not PDF2IMAGE_OK:
-        st.error("pdf2image non disponibile. Aggiungi `poppler-utils` in packages.txt.")
-    else:
-        with st.spinner("Conversione PDF → immagini…"):
-            page_pngs = pdf_to_pngs(main_pdf_file.read())
-            html_body = build_html(len(page_pngs))
-        st.success(f"✅ PDF caricato — **{len(page_pngs)} pagina/e**  ·  `{main_pdf_file.name}`")
-        with st.expander("🔍 Anteprima corpo mail", expanded=False):
-            for i, png in enumerate(page_pngs):
-                st.image(png, caption=f"Pagina {i+1}", use_column_width=True)
+    with st.spinner("Estrazione testo e stili dal PDF…"):
+        pdf_html, preview_pngs = pdf_to_data(main_pdf_file.read())
+    n_pg = max(len(preview_pngs), 1)
+    st.success(f"✅ PDF caricato — **{n_pg} pagina/e**  ·  `{main_pdf_file.name}`")
+    with st.expander("🔍 Anteprima visiva", expanded=False):
+        for i, png in enumerate(preview_pngs):
+            st.image(png, caption=f"Pagina {i+1}", use_column_width=True)
 
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -531,6 +559,8 @@ if sheets_data and selected_sheets:
                             "emails": all_emails,
                             "tipo": "to" if tipo.startswith("A") else "bcc",
                             "nome_display": nome_display,
+                            "nome1": n1,
+                            "nome2": n2,
                             "note": note,
                         }
                     )
@@ -568,9 +598,17 @@ if recipient_rows:
     if att_files:
         st.caption(f"📎 Allegato a ogni bozza: {', '.join(f'`{f.name}`' for f in att_files)}")
 
-    ready = bool(page_pngs and html_body and subject.strip())
+    # Opzioni personalizzazione
+    st.markdown("**Personalizzazione:**")
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        inc_saluto = st.checkbox("Aggiungi saluto con nome destinatario", value=True, key="inc_saluto")
+    with col_p2:
+        inc_note = st.checkbox("Aggiungi nota personalizzazione nel testo", value=True, key="inc_note")
+
+    ready = bool(pdf_html and subject.strip())
     if not ready:
-        if not page_pngs:
+        if not pdf_html:
             st.warning("⬆️ Carica prima il PDF principale (Step ①).")
         if not subject.strip():
             st.warning("✏️ Inserisci l'oggetto della mail.")
@@ -594,9 +632,15 @@ if recipient_rows:
                     text=f"Bozza {i+1}/{n_tot} — {rec['nome_display']}",
                 )
                 try:
+                    # Costruisci HTML personalizzato per questo destinatario
+                    nome1 = rec.get("nome1", "") if inc_saluto else ""
+                    nome2 = rec.get("nome2", "") if inc_saluto else ""
+                    nota  = rec.get("note", "")  if inc_note  else ""
+                    full_html = build_full_email(pdf_html, nome1, nome2, nota, inc_note)
+
                     raw_msg = build_mime_message(
                         to_list, bcc_list, subject,
-                        html_body, page_pngs, attachments_data,
+                        full_html, attachments_data,
                     )
                     service.users().drafts().create(
                         userId="me",
