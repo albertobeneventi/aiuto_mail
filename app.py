@@ -160,28 +160,81 @@ if "code" in _qp and "credentials" not in st.session_state:
 
 
 # ── PDF helpers ───────────────────────────────────────────────────────────────
+def _page_to_html(page) -> str:
+    """Converte una pagina fitz in HTML flowing (niente position:absolute)."""
+    import fitz
+
+    data = page.get_text("dict")
+
+    # Mappa dei link: lista di (fitz.Rect, uri)
+    link_rects = [
+        (fitz.Rect(lnk["from"]), lnk["uri"])
+        for lnk in page.get_links()
+        if lnk.get("kind") == 2 and lnk.get("uri")
+    ]
+
+    def find_uri(bbox):
+        sr = fitz.Rect(bbox)
+        for lr, uri in link_rects:
+            if sr.intersects(lr):
+                return uri
+        return ""
+
+    blocks = sorted(
+        [b for b in data["blocks"] if b["type"] == 0],
+        key=lambda b: (round(b["bbox"][1] / 6) * 6, b["bbox"][0]),
+    )
+
+    parts = []
+    for block in blocks:
+        lines_html = []
+        for line in block["lines"]:
+            spans_html = []
+            for span in line["spans"]:
+                text = span["text"]
+                if not text:
+                    continue
+                size  = span["size"]
+                flags = span["flags"]
+                col   = span["color"]
+                r, g, b = (col >> 16) & 0xFF, (col >> 8) & 0xFF, col & 0xFF
+                style = (
+                    f"font-family:Arial,sans-serif;"
+                    f"font-size:{size:.0f}pt;"
+                    f"color:#{r:02x}{g:02x}{b:02x};"
+                )
+                if flags & 16: style += "font-weight:bold;"
+                if flags & 2:  style += "font-style:italic;"
+                esc = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                uri = find_uri(span["bbox"])
+                if uri:
+                    spans_html.append(
+                        f'<a href="{uri}" style="{style}text-decoration:underline;">{esc}</a>'
+                    )
+                else:
+                    spans_html.append(f'<span style="{style}">{esc}</span>')
+            if spans_html:
+                lines_html.append("".join(spans_html))
+        if lines_html:
+            parts.append(
+                f'<p style="margin:3px 0;line-height:1.5;">{"<br>".join(lines_html)}</p>'
+            )
+
+    return "\n".join(parts)
+
+
 @st.cache_data(show_spinner=False, max_entries=5)
 def pdf_to_data(pdf_bytes: bytes, dpi: int = 150):
     """Returns (pdf_html: str, preview_pngs: list[bytes])"""
-    import re
-    # HTML via PyMuPDF (testo reale con colori e stili)
     try:
         import fitz
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        pages_html = []
-        for page in doc:
-            pages_html.append(page.get_text("html"))
+        sep = '<hr style="border:none;border-top:1px solid #e0e0e0;margin:24px 0;">'
+        pdf_html = sep.join(_page_to_html(p) for p in doc)
         doc.close()
-        body = '<hr style="border:none;border-top:1px solid #e0e0e0;margin:24px 0;">'.join(pages_html)
-        # Rimuovi dichiarazioni HTML/body delle singole pagine
-        body = re.sub(r'</?html[^>]*>', '', body, flags=re.IGNORECASE)
-        body = re.sub(r'</?body[^>]*>', '', body, flags=re.IGNORECASE)
-        body = re.sub(r'</?head[^>]*>.*?</head>', '', body, flags=re.IGNORECASE | re.DOTALL)
-        pdf_html = body.strip()
-    except Exception:
-        pdf_html = "<p><em>Impossibile estrarre testo dal PDF.</em></p>"
+    except Exception as e:
+        pdf_html = f"<p><em>Errore estrazione PDF: {e}</em></p>"
 
-    # PNG per anteprima nell'app
     pngs = []
     if PDF2IMAGE_OK:
         try:
@@ -754,7 +807,17 @@ if recipient_rows:
         status_box = st.empty()
         errors = []
         created = 0
-        stored_intros = st.session_state.get("intros", {})
+        # Genera intro se l'utente non ha cliccato "Genera anteprime"
+        if "intros" not in st.session_state:
+            st.session_state["intros"] = {
+                i: generate_intro_local(
+                    rec.get("nome1",""), rec.get("cog1",""),
+                    rec.get("nome2",""), rec.get("cog2",""),
+                    rec.get("azienda",""), rec.get("note",""),
+                )
+                for i, rec in enumerate(recipient_rows)
+            }
+        stored_intros = st.session_state["intros"]
 
         for i, rec in enumerate(recipient_rows):
             to_list  = rec["emails"] if rec["tipo"] == "to"  else []
