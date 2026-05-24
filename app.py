@@ -486,8 +486,28 @@ def generate_intro_local(nome1: str, cog1: str, nome2: str, cog2: str,
     return "\n".join(parts)
 
 
+_FIRMA = (
+    '<hr style="border:none;border-top:1px solid #d0d0d0;margin:28px 0 16px 0;">'
+    '<table cellpadding="0" cellspacing="0" style="font-family:Arial,sans-serif;font-size:11pt;color:#222;">'
+    '<tr><td style="padding:1px 0;"><strong>Alberto Beneventi</strong></td></tr>'
+    '<tr><td style="padding:1px 0;">Cell. 353 4751808</td></tr>'
+    '<tr><td style="padding:6px 0 1px 0;">Azimut Capital Management Sgr Spa</td></tr>'
+    '<tr><td style="padding:1px 0;">Consulente Certificato Efpa</td></tr>'
+    '<tr><td style="padding:8px 0 2px 0;color:#888;font-size:10pt;">&#x2015;&#x2015;&#x2015;&#x2015;&#x2015;&#x2015;</td></tr>'
+    '<tr><td style="padding:1px 0;">Private banker Nord Est 2021 - Citywire</td></tr>'
+    '<tr><td style="padding:1px 0;">'
+    '<a href="https://citywire.com/it/news/tutti-i-private-banker-le-banche-e-i-top-manager-vincitori-dei-citywire-italia-private-banking-2021/a1562303?page=2"'
+    ' style="color:#1a5fa8;font-size:10pt;">citywire.com — Private Banking Awards 2021</a>'
+    '</td></tr>'
+    '<tr><td style="padding:8px 0 2px 0;color:#888;font-size:10pt;">&#x2015;&#x2015;&#x2015;&#x2015;&#x2015;&#x2015;</td></tr>'
+    '<tr><td style="padding:1px 0;">Consulente Finanziario</td></tr>'
+    '<tr><td style="padding:1px 0;color:#555;font-size:10pt;">Delibera Consob 16584</td></tr>'
+    '</table>'
+)
+
+
 def build_full_email(pdf_html: str, intro_html: str = "") -> str:
-    """Assembla HTML email con intro personalizzata + corpo PDF."""
+    """Assembla HTML email con intro personalizzata + corpo documento + firma."""
     header = ""
     if intro_html.strip():
         header = (
@@ -500,7 +520,7 @@ def build_full_email(pdf_html: str, intro_html: str = "") -> str:
         '<html><head><meta charset="utf-8"></head>'
         '<body style="font-family:Arial,sans-serif;max-width:800px;'
         'margin:0 auto;padding:20px;background:#ffffff;">'
-        + header + pdf_html +
+        + header + pdf_html + _FIRMA +
         '</body></html>'
     )
 
