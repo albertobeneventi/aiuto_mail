@@ -159,33 +159,195 @@ if "code" in _qp and "credentials" not in st.session_state:
     st.rerun()
 
 
-# ── Word helper ───────────────────────────────────────────────────────────────
-_DOCX_CSS = """<style>
-body,p,td,th,li { font-family:Arial,sans-serif; font-size:11pt; line-height:1.5; }
-table { border-collapse:collapse; width:100%; margin:10px 0; }
-td,th { border:1px solid #ccc; padding:5px 10px; }
-th { background:#f0f0f0; font-weight:bold; }
-h1 { font-size:18pt; } h2 { font-size:15pt; } h3 { font-size:13pt; }
-a { color:#1a5fa8; }
-blockquote { border-left:4px solid #c0392b; margin:10px 0; padding:4px 14px; color:#333; }
-</style>"""
+# ── Word helper (python-docx, XML-level per colori/bordi/riquadri) ────────────
+_DOCX_CSS = (
+    '<style>'
+    'body,p,td,th,li,span{font-family:Arial,sans-serif;font-size:11pt;line-height:1.5;}'
+    'table{border-collapse:collapse;width:100%;margin:8px 0;}'
+    'td,th{border:1px solid #ccc;padding:5px 10px;vertical-align:top;}'
+    'h1{font-size:17pt;margin:6px 0;}h2{font-size:14pt;margin:5px 0;}'
+    'h3{font-size:12pt;margin:4px 0;}p{margin:3px 0;}'
+    'a{color:#1a5fa8;}'
+    '</style>'
+)
+
 
 @st.cache_data(show_spinner=False, max_entries=5)
 def docx_to_html(docx_bytes: bytes) -> str:
-    """Converte .docx in HTML via mammoth — tabelle, link, grassetti, immagini."""
-    import mammoth
-    result = mammoth.convert_to_html(
-        BytesIO(docx_bytes),
-        convert_image=mammoth.images.img_element(
-            lambda img: {
-                "src": "data:{};base64,{}".format(
-                    img.content_type,
-                    base64.b64encode(img.read()).decode(),
-                )
-            }
-        ),
-    )
-    return _DOCX_CSS + result.value
+    """Converte .docx in HTML preservando colori, sfondi celle, bordi, link, immagini."""
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(BytesIO(docx_bytes))
+
+    # Mappa relazioni: rId → url (hyperlink) o base64 data URI (immagine)
+    rels_url, rels_img = {}, {}
+    for rel in doc.part.rels.values():
+        if "hyperlink" in rel.reltype:
+            try: rels_url[rel.rId] = rel._target
+            except Exception: pass
+        elif "image" in rel.reltype:
+            try:
+                part = rel.target_part
+                b64 = base64.b64encode(part.blob).decode()
+                rels_img[rel.rId] = f"data:{part.content_type};base64,{b64}"
+            except Exception: pass
+
+    def _run_style(rPr):
+        if rPr is None:
+            return ""
+        s = ""
+        b = rPr.find(qn("w:b"))
+        if b is not None and b.get(qn("w:val"), "1") != "0":
+            s += "font-weight:bold;"
+        i = rPr.find(qn("w:i"))
+        if i is not None and i.get(qn("w:val"), "1") != "0":
+            s += "font-style:italic;"
+        col = rPr.find(qn("w:color"))
+        if col is not None:
+            v = col.get(qn("w:val"), "")
+            if v and v != "auto":
+                s += f"color:#{v.lower()};"
+        sz = rPr.find(qn("w:sz"))
+        if sz is not None:
+            v = sz.get(qn("w:val"), "")
+            if v:
+                s += f"font-size:{int(v)//2}pt;"
+        shd = rPr.find(qn("w:shd"))
+        if shd is not None:
+            fill = shd.get(qn("w:fill"), "")
+            if fill and fill not in ("auto", "none", ""):
+                s += f"background-color:#{fill.lower()};"
+        return s
+
+    def _run_html(r):
+        texts = r.findall(qn("w:t"))
+        text = "".join(t.text or "" for t in texts)
+        if not text:
+            # immagine inline
+            blip = r.find(".//" + qn("a:blip"))
+            if blip is not None:
+                rId = blip.get(qn("r:embed"), "")
+                src = rels_img.get(rId, "")
+                if src:
+                    return f'<img src="{src}" style="max-width:100%;display:inline;">'
+            return ""
+        esc = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        st = _run_style(r.find(qn("w:rPr")))
+        return f'<span style="{st}">{esc}</span>' if st else esc
+
+    def _para_inner(p_elem):
+        html = ""
+        for child in p_elem:
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if tag == "r":
+                html += _run_html(child)
+            elif tag == "hyperlink":
+                rId = child.get(qn("r:id"), "")
+                url = rels_url.get(rId, "#")
+                inner = "".join(_run_html(r) for r in child.findall(qn("w:r")))
+                if inner:
+                    html += f'<a href="{url}">{inner}</a>'
+            elif tag == "ins":
+                for r in child.findall(qn("w:r")):
+                    html += _run_html(r)
+        return html
+
+    def _para_to_html(p_elem):
+        pPr = p_elem.find(qn("w:pPr"))
+        style_name = ""
+        p_css = "margin:3px 0;line-height:1.5;"
+
+        if pPr is not None:
+            ps = pPr.find(qn("w:pStyle"))
+            if ps is not None:
+                style_name = ps.get(qn("w:val"), "")
+            # sfondo paragrafo (riquadri)
+            shd = pPr.find(qn("w:shd"))
+            if shd is not None:
+                fill = shd.get(qn("w:fill"), "")
+                if fill and fill not in ("auto", "none", ""):
+                    p_css += f"background-color:#{fill.lower()};padding:4px 10px;"
+            # bordi paragrafo
+            pBdr = pPr.find(qn("w:pBdr"))
+            if pBdr is not None:
+                for side in ("top", "bottom", "left", "right"):
+                    b = pBdr.find(qn(f"w:{side}"))
+                    if b is not None:
+                        val = b.get(qn("w:val"), "none")
+                        if val not in ("none", "nil", ""):
+                            sz  = b.get(qn("w:sz"), "4")
+                            clr = b.get(qn("w:color"), "000000")
+                            pt  = max(int(sz) / 8, 0.5)
+                            p_css += f"border-{side}:{pt:.1f}pt solid #{clr.lower()};"
+                p_css += "padding:4px 10px;"
+            # allineamento
+            jc = pPr.find(qn("w:jc"))
+            if jc is not None:
+                am = {"center": "center", "right": "right", "both": "justify"}
+                a = am.get(jc.get(qn("w:val"), ""), "")
+                if a:
+                    p_css += f"text-align:{a};"
+
+        inner = _para_inner(p_elem)
+        if not inner.strip():
+            return '<p style="margin:2px 0;">&nbsp;</p>'
+
+        sn = style_name.lower()
+        if "heading1" in sn or sn == "1":
+            return f'<h1 style="{p_css}">{inner}</h1>'
+        if "heading2" in sn or sn == "2":
+            return f'<h2 style="{p_css}">{inner}</h2>'
+        if "heading3" in sn or sn == "3":
+            return f'<h3 style="{p_css}">{inner}</h3>'
+        return f'<p style="{p_css}">{inner}</p>'
+
+    def _cell_css(tc):
+        css = "padding:5px 10px;vertical-align:top;"
+        tcPr = tc.find(qn("w:tcPr"))
+        if tcPr is None:
+            return css
+        shd = tcPr.find(qn("w:shd"))
+        if shd is not None:
+            fill = shd.get(qn("w:fill"), "")
+            if fill and fill not in ("auto", "none", ""):
+                css += f"background-color:#{fill.lower()};"
+        tcBdr = tcPr.find(qn("w:tcBorders"))
+        if tcBdr is not None:
+            for side in ("top", "bottom", "left", "right"):
+                b = tcBdr.find(qn(f"w:{side}"))
+                if b is not None:
+                    val = b.get(qn("w:val"), "")
+                    if val and val not in ("none", "nil"):
+                        sz  = b.get(qn("w:sz"), "4")
+                        clr = b.get(qn("w:color"), "000000")
+                        pt  = max(int(sz) / 8, 0.5)
+                        css += f"border-{side}:{pt:.1f}pt solid #{clr.lower()};"
+        return css
+
+    def _table_to_html(tbl):
+        rows = ""
+        for tr in tbl.findall(qn("w:tr")):
+            cells = ""
+            for tc in tr.findall(qn("w:tc")):
+                css = _cell_css(tc)
+                content = "".join(_para_to_html(p) for p in tc.findall(qn("w:p")))
+                cells += f'<td style="{css}">{content}</td>'
+            rows += f"<tr>{cells}</tr>"
+        return (
+            '<table style="border-collapse:collapse;width:100%;margin:8px 0;">'
+            + rows + "</table>"
+        )
+
+    parts = [_DOCX_CSS]
+    for child in doc.element.body:
+        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if tag == "p":
+            parts.append(_para_to_html(child))
+        elif tag == "tbl":
+            parts.append(_table_to_html(child))
+
+    return "".join(parts)
 
 
 # ── PDF helpers ───────────────────────────────────────────────────────────────
