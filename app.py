@@ -697,12 +697,9 @@ if recipient_rows:
         "e azione specifica (appuntamento, follow-up, ringraziamento, primo invio…)."
     )
 
-    gen_disabled = not subject.strip()
     if st.button(
         "✨ Genera anteprime personalizzate",
         key="btn_gen_intros",
-        disabled=gen_disabled,
-        help="Inserisci prima l'oggetto della mail" if gen_disabled else "",
     ):
         intros = {}
         for i, rec in enumerate(recipient_rows):
