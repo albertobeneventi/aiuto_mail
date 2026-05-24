@@ -29,6 +29,12 @@ try:
 except ImportError:
     GOOGLE_OK = False
 
+try:
+    import anthropic as _anthropic
+    ANTHROPIC_OK = True
+except ImportError:
+    ANTHROPIC_OK = False
+
 SCOPE = "https://www.googleapis.com/auth/gmail.compose"
 SCOPES = [SCOPE]
 SKIP_SHEETS = {"Istruzioni"}
@@ -195,28 +201,54 @@ def pdf_to_data(pdf_bytes: bytes, dpi: int = 150):
     return pdf_html, pngs
 
 
-def build_full_email(pdf_html: str, nome1: str, nome2: str,
-                     note: str, include_note: bool) -> str:
-    """Assembla HTML email completa con saluto personalizzato + corpo PDF."""
-    names = [n for n in [nome1.strip(), nome2.strip()]
-             if n and n.lower() not in ("nan", "none", "")]
-    if len(names) >= 2:
-        saluto = f"Cari {names[0]} e {names[1]},"
-    elif names:
-        saluto = f"Caro/a {names[0]},"
-    else:
-        saluto = ""
+def generate_intro(nome1: str, cog1: str, nome2: str, cog2: str,
+                   azienda: str, note: str, subject: str) -> str:
+    """Chiama Claude API per scrivere un'introduzione personalizzata."""
+    api_key = _secret("ANTHROPIC_API_KEY")
+    if not api_key or not ANTHROPIC_OK:
+        return ""
+    try:
+        client = _anthropic.Anthropic(api_key=api_key)
+        dest = f"{nome1} {cog1}".strip()
+        if nome2 or cog2:
+            dest += f" e {(nome2 + ' ' + cog2).strip()}"
+        if azienda:
+            dest += f" ({azienda})"
+        prompt = (
+            "Sei un assistente che scrive introduzioni personalizzate per email "
+            "professionali nel settore finanziario.\n\n"
+            f"Destinatario: {dest or 'non specificato'}\n"
+            f"Note di personalizzazione: {note or 'nessuna'}\n"
+            f"Oggetto della mail: {subject}\n\n"
+            "Scrivi un'introduzione (2-4 frasi) che:\n"
+            "1. Apre con il saluto adatto al tono indicato nelle note "
+            "(es. 'Buongiorno Dott. Rossi,' per formale, 'Ciao Marco,' per informale/amichevole)\n"
+            "2. Se nelle note c'è un'azione specifica (proposta appuntamento, follow-up, "
+            "ringraziamento, evento recente...) la include in modo naturale\n"
+            "3. Annuncia brevemente il report allegato\n\n"
+            "Rispondi SOLO con il testo in HTML semplice (tag <p> per i paragrafi). "
+            "Niente firma, niente chiusura, niente spiegazioni."
+        )
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return msg.content[0].text.strip()
+    except Exception as e:
+        return f"<p><em>[Errore generazione: {e}]</em></p>"
 
+
+def build_full_email(pdf_html: str, intro_html: str = "") -> str:
+    """Assembla HTML email con intro personalizzata + corpo PDF."""
     header = ""
-    if saluto:
-        header += (f'<p style="font-family:Arial,sans-serif;font-size:15px;'
-                   f'margin:0 0 10px 0;">{saluto}</p>')
-    if include_note and note:
-        header += (f'<p style="font-family:Arial,sans-serif;font-size:14px;'
-                   f'color:#444;margin:0 0 16px 0;">{note}</p>')
-    if header:
-        header += '<hr style="border:none;border-top:2px solid #c0392b;margin:16px 0 20px 0;">'
-
+    if intro_html.strip():
+        header = (
+            '<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.7;">'
+            + intro_html +
+            '</div>'
+            '<hr style="border:none;border-top:2px solid #c0392b;margin:20px 0 24px 0;">'
+        )
     return (
         '<html><head><meta charset="utf-8"></head>'
         '<body style="font-family:Arial,sans-serif;max-width:800px;'
@@ -559,8 +591,9 @@ if sheets_data and selected_sheets:
                             "emails": all_emails,
                             "tipo": "to" if tipo.startswith("A") else "bcc",
                             "nome_display": nome_display,
-                            "nome1": n1,
-                            "nome2": n2,
+                            "nome1": n1, "cog1": c1,
+                            "nome2": n2, "cog2": c2,
+                            "azienda": azienda,
                             "note": note,
                         }
                     )
@@ -598,14 +631,75 @@ if recipient_rows:
     if att_files:
         st.caption(f"📎 Allegato a ogni bozza: {', '.join(f'`{f.name}`' for f in att_files)}")
 
-    # Opzioni personalizzazione
-    st.markdown("**Personalizzazione:**")
-    col_p1, col_p2 = st.columns(2)
-    with col_p1:
-        inc_saluto = st.checkbox("Aggiungi saluto con nome destinatario", value=True, key="inc_saluto")
-    with col_p2:
-        inc_note = st.checkbox("Aggiungi nota personalizzazione nel testo", value=True, key="inc_note")
+    st.markdown("---")
 
+    # ── Personalizzazione AI ───────────────────────────────────────────────────
+    has_api_key = bool(_secret("ANTHROPIC_API_KEY"))
+
+    if not has_api_key:
+        st.info(
+            "💡 **Personalizzazione AI non attiva.**  "
+            "Aggiungi `ANTHROPIC_API_KEY` nei Secrets dell'app per far scrivere a Claude "
+            "un'introduzione su misura (saluto, tono, proposta appuntamento...) "
+            "basata sulle note del file Excel."
+        )
+    else:
+        st.markdown("**🤖 Personalizzazione AI**")
+        st.caption(
+            "Claude legge le note dal file Excel e scrive per ogni destinatario "
+            "un'introduzione personalizzata: tono giusto (formale/informale), "
+            "contenuto specifico (appuntamento, follow-up, ringraziamento…)."
+        )
+
+        gen_disabled = not subject.strip()
+        if st.button(
+            "✨ Genera anteprime personalizzate",
+            key="btn_gen_intros",
+            disabled=gen_disabled,
+        ):
+            intros = {}
+            prog = st.progress(0.0, text="Generazione introduzioni con Claude…")
+            for i, rec in enumerate(recipient_rows):
+                prog.progress(
+                    (i + 1) / n_tot,
+                    text=f"Generazione {i+1}/{n_tot} — {rec['nome_display']}",
+                )
+                intros[i] = generate_intro(
+                    rec.get("nome1", ""), rec.get("cog1", ""),
+                    rec.get("nome2", ""), rec.get("cog2", ""),
+                    rec.get("azienda", ""), rec.get("note", ""),
+                    subject,
+                )
+            prog.empty()
+            st.session_state["intros"] = intros
+            st.rerun()
+
+        if gen_disabled:
+            st.caption("⚠️ Inserisci prima l'oggetto per generare le anteprime.")
+
+        if "intros" in st.session_state and st.session_state["intros"]:
+            st.success(
+                f"✅ {len(st.session_state['intros'])} introduzioni generate — "
+                "revisionali e modificale qui sotto prima di creare le bozze."
+            )
+            with st.expander("📝 Revisiona / modifica le introduzioni", expanded=True):
+                for i, rec in enumerate(recipient_rows):
+                    st.markdown(f"**{rec['nome_display']}**")
+                    if rec.get("note"):
+                        st.caption(f"Note originali: *{rec['note']}*")
+                    current = st.session_state["intros"].get(i, "")
+                    st.text_area(
+                        "Introduzione generata (HTML)",
+                        value=current,
+                        height=110,
+                        key=f"intro_edit_{i}",
+                        label_visibility="collapsed",
+                    )
+                    st.markdown('<div class="row-sep"></div>', unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Crea bozze ────────────────────────────────────────────────────────────
     ready = bool(pdf_html and subject.strip())
     if not ready:
         if not pdf_html:
@@ -613,7 +707,6 @@ if recipient_rows:
         if not subject.strip():
             st.warning("✏️ Inserisci l'oggetto della mail.")
     else:
-        st.markdown("")
         if st.button(
             f"📨  Crea {n_tot} bozze in Gmail",
             type="primary",
@@ -623,6 +716,7 @@ if recipient_rows:
             status_box = st.empty()
             errors = []
             created = 0
+            stored_intros = st.session_state.get("intros", {})
 
             for i, rec in enumerate(recipient_rows):
                 to_list  = rec["emails"] if rec["tipo"] == "to"  else []
@@ -632,12 +726,11 @@ if recipient_rows:
                     text=f"Bozza {i+1}/{n_tot} — {rec['nome_display']}",
                 )
                 try:
-                    # Costruisci HTML personalizzato per questo destinatario
-                    nome1 = rec.get("nome1", "") if inc_saluto else ""
-                    nome2 = rec.get("nome2", "") if inc_saluto else ""
-                    nota  = rec.get("note", "")  if inc_note  else ""
-                    full_html = build_full_email(pdf_html, nome1, nome2, nota, inc_note)
-
+                    # Usa intro modificata dall'utente se disponibile, altrimenti quella generata
+                    intro_html = st.session_state.get(
+                        f"intro_edit_{i}", stored_intros.get(i, "")
+                    )
+                    full_html = build_full_email(pdf_html, intro_html)
                     raw_msg = build_mime_message(
                         to_list, bcc_list, subject,
                         full_html, attachments_data,
@@ -660,7 +753,7 @@ if recipient_rows:
             if created:
                 st.success(
                     f"🎉 **{created} bozze create con successo** in Gmail!  "
-                    f"Aprile [Gmail → Bozze](https://mail.google.com/mail/#drafts) per rivederle prima di inviare."
+                    f"Apri [Gmail → Bozze](https://mail.google.com/mail/#drafts) per rivederle."
                 )
                 st.balloons()
 
