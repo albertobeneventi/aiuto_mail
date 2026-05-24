@@ -160,93 +160,40 @@ if "code" in _qp and "credentials" not in st.session_state:
 
 
 # ── PDF helpers ───────────────────────────────────────────────────────────────
-def _page_to_html(page) -> str:
-    """Converte una pagina fitz in HTML flowing (niente position:absolute)."""
-    import fitz
-
-    data = page.get_text("dict")
-
-    # Mappa dei link: lista di (fitz.Rect, uri)
-    link_rects = [
-        (fitz.Rect(lnk["from"]), lnk["uri"])
-        for lnk in page.get_links()
-        if lnk.get("kind") == 2 and lnk.get("uri")
-    ]
-
-    def find_uri(bbox):
-        sr = fitz.Rect(bbox)
-        for lr, uri in link_rects:
-            if sr.intersects(lr):
-                return uri
-        return ""
-
-    blocks = sorted(
-        [b for b in data["blocks"] if b["type"] == 0],
-        key=lambda b: (round(b["bbox"][1] / 6) * 6, b["bbox"][0]),
-    )
-
-    parts = []
-    for block in blocks:
-        lines_html = []
-        for line in block["lines"]:
-            spans_html = []
-            for span in line["spans"]:
-                text = span["text"]
-                if not text:
-                    continue
-                size  = span["size"]
-                flags = span["flags"]
-                col   = span["color"]
-                r, g, b = (col >> 16) & 0xFF, (col >> 8) & 0xFF, col & 0xFF
-                style = (
-                    f"font-family:Arial,sans-serif;"
-                    f"font-size:{size:.0f}pt;"
-                    f"color:#{r:02x}{g:02x}{b:02x};"
-                )
-                if flags & 16: style += "font-weight:bold;"
-                if flags & 2:  style += "font-style:italic;"
-                esc = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                uri = find_uri(span["bbox"])
-                if uri:
-                    spans_html.append(
-                        f'<a href="{uri}" style="{style}text-decoration:underline;">{esc}</a>'
-                    )
-                else:
-                    spans_html.append(f'<span style="{style}">{esc}</span>')
-            if spans_html:
-                lines_html.append("".join(spans_html))
-        if lines_html:
-            parts.append(
-                f'<p style="margin:3px 0;line-height:1.5;">{"<br>".join(lines_html)}</p>'
-            )
-
-    return "\n".join(parts)
-
-
 @st.cache_data(show_spinner=False, max_entries=5)
 def pdf_to_data(pdf_bytes: bytes, dpi: int = 150):
-    """Returns (pdf_html: str, preview_pngs: list[bytes])"""
+    """Returns (email_html: str, preview_pngs: list[bytes]).
+    Le pagine sono renderizzate come immagini JPEG inline (fedeltà visiva totale).
+    """
     try:
         import fitz
+        from PIL import Image as PILImage
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        sep = '<hr style="border:none;border-top:1px solid #e0e0e0;margin:24px 0;">'
-        pdf_html = sep.join(_page_to_html(p) for p in doc)
+        scale = dpi / 72
+        mat = fitz.Matrix(scale, scale)
+        imgs_html = []
+        pngs = []
+        for page in doc:
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            # PNG per anteprima app
+            pngs.append(pix.tobytes("png"))
+            # JPEG compresso per email (base64 inline)
+            pil_img = PILImage.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            buf = BytesIO()
+            pil_img.save(buf, format="JPEG", quality=88, optimize=True)
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            imgs_html.append(
+                f'<img src="data:image/jpeg;base64,{b64}" '
+                f'style="max-width:800px;width:100%;display:block;'
+                f'margin:0 auto 10px auto;">'
+            )
         doc.close()
+        email_html = "\n".join(imgs_html)
     except Exception as e:
-        pdf_html = f"<p><em>Errore estrazione PDF: {e}</em></p>"
+        email_html = f"<p><em>Errore rendering PDF: {e}</em></p>"
+        pngs = []
 
-    pngs = []
-    if PDF2IMAGE_OK:
-        try:
-            images = convert_from_bytes(pdf_bytes, dpi=dpi)
-            for img in images:
-                buf = BytesIO()
-                img.save(buf, format="PNG")
-                pngs.append(buf.getvalue())
-        except Exception:
-            pass
-
-    return pdf_html, pngs
+    return email_html, pngs
 
 
 def generate_intro_local(nome1: str, cog1: str, nome2: str, cog2: str,
