@@ -159,6 +159,35 @@ if "code" in _qp and "credentials" not in st.session_state:
     st.rerun()
 
 
+# ── Word helper ───────────────────────────────────────────────────────────────
+_DOCX_CSS = """<style>
+body,p,td,th,li { font-family:Arial,sans-serif; font-size:11pt; line-height:1.5; }
+table { border-collapse:collapse; width:100%; margin:10px 0; }
+td,th { border:1px solid #ccc; padding:5px 10px; }
+th { background:#f0f0f0; font-weight:bold; }
+h1 { font-size:18pt; } h2 { font-size:15pt; } h3 { font-size:13pt; }
+a { color:#1a5fa8; }
+blockquote { border-left:4px solid #c0392b; margin:10px 0; padding:4px 14px; color:#333; }
+</style>"""
+
+@st.cache_data(show_spinner=False, max_entries=5)
+def docx_to_html(docx_bytes: bytes) -> str:
+    """Converte .docx in HTML via mammoth — tabelle, link, grassetti, immagini."""
+    import mammoth
+    result = mammoth.convert_to_html(
+        BytesIO(docx_bytes),
+        convert_image=mammoth.images.img_element(
+            lambda img: {
+                "src": "data:{};base64,{}".format(
+                    img.content_type,
+                    base64.b64encode(img.read()).decode(),
+                )
+            }
+        ),
+    )
+    return _DOCX_CSS + result.value
+
+
 # ── PDF helpers ───────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False, max_entries=5)
 def pdf_to_data(pdf_bytes: bytes, dpi: int = 150):
@@ -461,27 +490,34 @@ st.markdown("---")
 # STEP 1 — PDF principale
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="step-card">', unsafe_allow_html=True)
-st.markdown('<div class="step-title">① PDF principale — corpo della mail</div>', unsafe_allow_html=True)
-st.caption("Il contenuto del PDF verrà riprodotto fedelmente (testo, colori, tabelle, stile).")
+st.markdown('<div class="step-title">① Documento principale — corpo della mail</div>', unsafe_allow_html=True)
+st.caption("Carica il **Word (.docx)** per fedeltà visiva completa (tabelle, colori, link), oppure un **PDF** come alternativa.")
 
-main_pdf_file = st.file_uploader(
-    "Carica il PDF principale",
-    type=["pdf"],
-    key="main_pdf",
+main_file = st.file_uploader(
+    "Documento principale",
+    type=["docx", "pdf"],
+    key="main_doc",
     label_visibility="collapsed",
 )
 
 pdf_html: str = ""
 preview_pngs: list = []
 
-if main_pdf_file:
-    with st.spinner("Estrazione testo e stili dal PDF…"):
-        pdf_html, preview_pngs = pdf_to_data(main_pdf_file.read())
-    n_pg = max(len(preview_pngs), 1)
-    st.success(f"✅ PDF caricato — **{n_pg} pagina/e**  ·  `{main_pdf_file.name}`")
-    with st.expander("🔍 Anteprima visiva", expanded=False):
-        for i, png in enumerate(preview_pngs):
-            st.image(png, caption=f"Pagina {i+1}", use_column_width=True)
+if main_file:
+    ext = main_file.name.rsplit(".", 1)[-1].lower()
+    if ext == "docx":
+        with st.spinner("Conversione Word → HTML…"):
+            pdf_html = docx_to_html(main_file.read())
+        st.success(f"✅ Word caricato — `{main_file.name}`  ·  tabelle, link e formattazione preservati")
+    else:
+        with st.spinner("Rendering PDF…"):
+            pdf_html, preview_pngs = pdf_to_data(main_file.read())
+        n_pg = max(len(preview_pngs), 1)
+        st.success(f"✅ PDF caricato — **{n_pg} pagina/e**  ·  `{main_file.name}`")
+        if preview_pngs:
+            with st.expander("🔍 Anteprima visiva", expanded=False):
+                for i, png in enumerate(preview_pngs):
+                    st.image(png, caption=f"Pagina {i+1}", use_column_width=True)
 
 st.markdown("</div>", unsafe_allow_html=True)
 
