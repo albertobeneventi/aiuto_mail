@@ -3,7 +3,7 @@
 # ============================================================
 
 import base64
-import json
+import urllib.parse
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.image import MIMEImage
@@ -12,6 +12,7 @@ from email.mime.text import MIMEText
 from io import BytesIO
 
 import pandas as pd
+import requests as _http
 import streamlit as st
 
 try:
@@ -21,7 +22,6 @@ except ImportError:
     PDF2IMAGE_OK = False
 
 try:
-    from google_auth_oauthlib.flow import Flow
     import google.oauth2.credentials
     import google.auth.transport.requests
     from googleapiclient.discovery import build
@@ -29,7 +29,8 @@ try:
 except ImportError:
     GOOGLE_OK = False
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.compose"]
+SCOPE = "https://www.googleapis.com/auth/gmail.compose"
+SCOPES = [SCOPE]
 SKIP_SHEETS = {"Istruzioni"}
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -94,39 +95,41 @@ def _secret(key, default=""):
         return default
 
 
-# ── OAuth ─────────────────────────────────────────────────────────────────────
-def _client_config():
-    cid = _secret("GOOGLE_CLIENT_ID")
-    csecret = _secret("GOOGLE_CLIENT_SECRET")
+# ── OAuth (semplice, senza PKCE) ──────────────────────────────────────────────
+def _build_auth_url():
+    cid  = _secret("GOOGLE_CLIENT_ID")
     ruri = _secret("REDIRECT_URI", "http://localhost:8501")
-    if not cid or not csecret:
-        return None, ruri
+    params = {
+        "client_id":     cid,
+        "redirect_uri":  ruri,
+        "response_type": "code",
+        "scope":         SCOPE,
+        "access_type":   "offline",
+        "prompt":        "consent",
+    }
+    return "https://accounts.google.com/o/oauth2/auth?" + urllib.parse.urlencode(params)
+
+
+def _exchange_code(code: str) -> dict:
+    cid     = _secret("GOOGLE_CLIENT_ID")
+    csecret = _secret("GOOGLE_CLIENT_SECRET")
+    ruri    = _secret("REDIRECT_URI", "http://localhost:8501")
+    resp = _http.post("https://oauth2.googleapis.com/token", data={
+        "code":          code,
+        "client_id":     cid,
+        "client_secret": csecret,
+        "redirect_uri":  ruri,
+        "grant_type":    "authorization_code",
+    }, timeout=15)
+    resp.raise_for_status()
+    tok = resp.json()
     return {
-        "web": {
-            "client_id": cid,
-            "client_secret": csecret,
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [ruri],
-        }
-    }, ruri
-
-
-def _make_flow():
-    cfg, ruri = _client_config()
-    if cfg is None:
-        return None
-    return Flow.from_client_config(cfg, scopes=SCOPES, redirect_uri=ruri)
-
-
-def _save_creds(creds):
-    st.session_state["credentials"] = {
-        "token": creds.token,
-        "refresh_token": creds.refresh_token,
-        "token_uri": creds.token_uri,
-        "client_id": creds.client_id,
-        "client_secret": creds.client_secret,
-        "scopes": list(creds.scopes) if creds.scopes else SCOPES,
+        "token":         tok["access_token"],
+        "refresh_token": tok.get("refresh_token", ""),
+        "token_uri":     "https://oauth2.googleapis.com/token",
+        "client_id":     cid,
+        "client_secret": csecret,
+        "scopes":        SCOPES,
     }
 
 
@@ -138,7 +141,7 @@ def get_service():
         creds = google.oauth2.credentials.Credentials(**data)
         if creds.expired and creds.refresh_token:
             creds.refresh(google.auth.transport.requests.Request())
-            _save_creds(creds)
+            st.session_state["credentials"]["token"] = creds.token
         return build("gmail", "v1", credentials=creds)
     except Exception:
         return None
@@ -146,18 +149,13 @@ def get_service():
 
 # Handle OAuth callback — must run before any widget
 _qp = st.query_params
-if "code" in _qp and st.session_state.get("pending_oauth"):
+if "code" in _qp and "credentials" not in st.session_state:
     try:
-        flow = _make_flow()
-        if flow:
-            flow.fetch_token(code=_qp["code"])
-            _save_creds(flow.credentials)
+        st.session_state["credentials"] = _exchange_code(_qp["code"])
     except Exception as e:
         st.session_state["oauth_error"] = str(e)
-    finally:
-        st.session_state.pop("pending_oauth", None)
-        st.query_params.clear()
-        st.rerun()
+    st.query_params.clear()
+    st.rerun()
 
 
 # ── PDF helpers ───────────────────────────────────────────────────────────────
@@ -331,28 +329,9 @@ else:
     st.markdown('<div class="auth-box">', unsafe_allow_html=True)
     st.markdown("**🔐 Collega il tuo account Gmail** per creare le bozze.")
     st.caption("Verrà richiesta solo l'autorizzazione a *creare bozze* (nessuna lettura delle email).")
-    if st.button("Collega Gmail →", type="primary"):
-        flow = _make_flow()
-        if flow:
-            auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-            st.session_state["pending_oauth"] = True
-            st.session_state["auth_url"] = auth_url
-
-    if st.session_state.get("auth_url") and not st.session_state.get("credentials") and "code" not in st.query_params:
-        auth_url = st.session_state["auth_url"]
-        import streamlit.components.v1 as components
-        components.html(
-            f"""<script>
-            function goAuth() {{ window.parent.location.href = "{auth_url}"; }}
-            </script>
-            <button onclick="goAuth()" style="
-                background:#c0392b;color:#fff;padding:10px 22px;
-                border:none;border-radius:7px;cursor:pointer;
-                font-size:15px;font-weight:700;font-family:sans-serif;">
-                → Vai a Google per autorizzare
-            </button>""",
-            height=55,
-        )
+    auth_url = _build_auth_url()
+    st.link_button("🔗  Vai a Google per autorizzare", auth_url, type="primary")
+    st.caption("Si apre in un nuovo tab → autorizza → torna su questa pagina già collegato.")
     st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
