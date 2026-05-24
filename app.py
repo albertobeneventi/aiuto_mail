@@ -734,61 +734,62 @@ if recipient_rows:
     st.markdown("---")
 
     # ── Crea bozze ────────────────────────────────────────────────────────────
-    ready = bool(pdf_html and subject.strip())
-    if not ready:
-        if not pdf_html:
-            st.warning("⬆️ Carica prima il PDF principale (Step ①).")
-        if not subject.strip():
-            st.warning("✏️ Inserisci l'oggetto della mail.")
-    else:
-        if st.button(
-            f"📨  Crea {n_tot} bozze in Gmail",
-            type="primary",
-            use_container_width=True,
-        ):
-            progress = st.progress(0.0, text="Avvio…")
-            status_box = st.empty()
-            errors = []
-            created = 0
-            stored_intros = st.session_state.get("intros", {})
+    missing = []
+    if not pdf_html:
+        missing.append("carica il PDF principale (Step ①)")
+    if not subject.strip():
+        missing.append("inserisci l'oggetto della mail")
 
-            for i, rec in enumerate(recipient_rows):
-                to_list  = rec["emails"] if rec["tipo"] == "to"  else []
-                bcc_list = rec["emails"] if rec["tipo"] == "bcc" else []
-                progress.progress(
-                    (i + 1) / n_tot,
-                    text=f"Bozza {i+1}/{n_tot} — {rec['nome_display']}",
+    btn_help = "Prima " + " e ".join(missing) if missing else ""
+    if st.button(
+        f"📨  Crea {n_tot} bozze in Gmail",
+        type="primary",
+        use_container_width=True,
+        disabled=bool(missing),
+        help=btn_help,
+    ):
+        progress = st.progress(0.0, text="Avvio…")
+        status_box = st.empty()
+        errors = []
+        created = 0
+        stored_intros = st.session_state.get("intros", {})
+
+        for i, rec in enumerate(recipient_rows):
+            to_list  = rec["emails"] if rec["tipo"] == "to"  else []
+            bcc_list = rec["emails"] if rec["tipo"] == "bcc" else []
+            progress.progress(
+                (i + 1) / n_tot,
+                text=f"Bozza {i+1}/{n_tot} — {rec['nome_display']}",
+            )
+            try:
+                intro_html = st.session_state.get(
+                    f"intro_edit_{i}", stored_intros.get(i, "")
                 )
-                try:
-                    # Usa intro modificata dall'utente se disponibile, altrimenti quella generata
-                    intro_html = st.session_state.get(
-                        f"intro_edit_{i}", stored_intros.get(i, "")
-                    )
-                    full_html = build_full_email(pdf_html, intro_html)
-                    raw_msg = build_mime_message(
-                        to_list, bcc_list, subject,
-                        full_html, attachments_data,
-                    )
-                    service.users().drafts().create(
-                        userId="me",
-                        body={"message": {"raw": raw_msg}},
-                    ).execute()
-                    created += 1
-                    status_box.success(f"✅ {created} bozze create…")
-                except Exception as e:
-                    errors.append(f"**{rec['nome_display']}**: {e}")
-
-            progress.empty()
-            if errors:
-                with st.expander(f"⚠️ {len(errors)} errore/i durante la creazione", expanded=True):
-                    for err in errors:
-                        st.error(err)
-
-            if created:
-                st.success(
-                    f"🎉 **{created} bozze create con successo** in Gmail!  "
-                    f"Apri [Gmail → Bozze](https://mail.google.com/mail/#drafts) per rivederle."
+                full_html = build_full_email(pdf_html, intro_html)
+                raw_msg = build_mime_message(
+                    to_list, bcc_list, subject,
+                    full_html, attachments_data,
                 )
-                st.balloons()
+                service.users().drafts().create(
+                    userId="me",
+                    body={"message": {"raw": raw_msg}},
+                ).execute()
+                created += 1
+                status_box.success(f"✅ {created} bozze create…")
+            except Exception as e:
+                errors.append(f"**{rec['nome_display']}**: {e}")
+
+        progress.empty()
+        if errors:
+            with st.expander(f"⚠️ {len(errors)} errore/i durante la creazione", expanded=True):
+                for err in errors:
+                    st.error(err)
+
+        if created:
+            st.success(
+                f"🎉 **{created} bozze create con successo** in Gmail!  "
+                f"Apri [Gmail → Bozze](https://mail.google.com/mail/#drafts) per rivederle."
+            )
+            st.balloons()
 
     st.markdown("</div>", unsafe_allow_html=True)
