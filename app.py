@@ -29,11 +29,6 @@ try:
 except ImportError:
     GOOGLE_OK = False
 
-try:
-    import anthropic as _anthropic
-    ANTHROPIC_OK = True
-except ImportError:
-    ANTHROPIC_OK = False
 
 SCOPE = "https://www.googleapis.com/auth/gmail.compose"
 SCOPES = [SCOPE]
@@ -201,42 +196,103 @@ def pdf_to_data(pdf_bytes: bytes, dpi: int = 150):
     return pdf_html, pngs
 
 
-def generate_intro(nome1: str, cog1: str, nome2: str, cog2: str,
-                   azienda: str, note: str, subject: str) -> str:
-    """Chiama Claude API per scrivere un'introduzione personalizzata."""
-    api_key = _secret("ANTHROPIC_API_KEY")
-    if not api_key or not ANTHROPIC_OK:
-        return ""
-    try:
-        client = _anthropic.Anthropic(api_key=api_key)
-        dest = f"{nome1} {cog1}".strip()
-        if nome2 or cog2:
-            dest += f" e {(nome2 + ' ' + cog2).strip()}"
-        if azienda:
-            dest += f" ({azienda})"
-        prompt = (
-            "Sei un assistente che scrive introduzioni personalizzate per email "
-            "professionali nel settore finanziario.\n\n"
-            f"Destinatario: {dest or 'non specificato'}\n"
-            f"Note di personalizzazione: {note or 'nessuna'}\n"
-            f"Oggetto della mail: {subject}\n\n"
-            "Scrivi un'introduzione (2-4 frasi) che:\n"
-            "1. Apre con il saluto adatto al tono indicato nelle note "
-            "(es. 'Buongiorno Dott. Rossi,' per formale, 'Ciao Marco,' per informale/amichevole)\n"
-            "2. Se nelle note c'è un'azione specifica (proposta appuntamento, follow-up, "
-            "ringraziamento, evento recente...) la include in modo naturale\n"
-            "3. Annuncia brevemente il report allegato\n\n"
-            "Rispondi SOLO con il testo in HTML semplice (tag <p> per i paragrafi). "
-            "Niente firma, niente chiusura, niente spiegazioni."
+def generate_intro_local(nome1: str, cog1: str, nome2: str, cog2: str,
+                         azienda: str, note: str) -> str:
+    """Genera introduzione personalizzata localmente — nessuna API esterna."""
+    nl = (note or "").lower()
+
+    # ── Tono ──────────────────────────────────────────────────────────────────
+    informal = any(k in nl for k in (
+        "ciao", "informale", "amico", "amica", "collega", "colleghi",
+        "amichevole", " tu ", " tu,", "tono diretto",
+    ))
+
+    # ── Titolo ────────────────────────────────────────────────────────────────
+    title = ""
+    if any(k in nl for k in ("dottoressa", "dott.ssa")):
+        title = "Dott.ssa"
+    elif any(k in nl for k in ("dottor", "dottore", "dott.", "dott ")):
+        title = "Dott."
+    elif any(k in nl for k in ("professor", "prof.", "prof ")):
+        title = "Prof."
+    elif any(k in nl for k in ("ingegner", "ing.", "ing ")):
+        title = "Ing."
+    elif any(k in nl for k in ("avvocato", "avv.", "avv ")):
+        title = "Avv."
+    elif any(k in nl for k in ("direttore", "dir.")):
+        title = "Direttore"
+
+    # ── Indirizzo ─────────────────────────────────────────────────────────────
+    def addr(nome, cog):
+        if informal:
+            return nome or cog
+        if title:
+            return f"{title} {cog}".strip() if cog else f"{title} {nome}".strip()
+        return cog or nome
+
+    a1, a2 = addr(nome1, cog1), addr(nome2, cog2)
+    if informal:
+        saluto = (f"Ciao {a1} e {a2}," if a1 and a2
+                  else f"Ciao {a1}," if a1 else "Ciao,")
+    else:
+        saluto = (f"Buongiorno {a1} e {a2}," if a1 and a2
+                  else f"Buongiorno {a1}," if a1 else "Buongiorno,")
+
+    # ── Azione principale ─────────────────────────────────────────────────────
+    lei = not informal
+    appt     = any(k in nl for k in ("appuntamento", "incontro", "call", "riunione",
+                                      "fissare", "organizzare", "proponi", "proporre"))
+    followup = any(k in nl for k in ("seguito", "follow", "come da", "come discusso",
+                                      "come concordato", "concordat"))
+    thanks   = any(k in nl for k in ("grazi", "ringrazi", "ringraziamento"))
+    first    = any(k in nl for k in ("primo invio", "primo contatto", "nuovo cliente",
+                                      "presentazione", "benvenuto", "prima volta"))
+
+    if appt:
+        corpo = (
+            "Le scrivo per proporLe un incontro nei prossimi giorni, "
+            "così da commentare insieme i mercati e valutare le opportunità del momento."
+            if lei else
+            "Ti scrivo per proporti un incontro nei prossimi giorni, "
+            "così da aggiornarci insieme sui mercati."
         )
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=400,
-            messages=[{"role": "user", "content": prompt}],
+    elif followup:
+        corpo = (
+            "Come concordato nel nostro recente incontro, "
+            "Le faccio pervenire il consueto report settimanale."
+            if lei else
+            "Come ci eravamo detti, ti mando il consueto report settimanale."
         )
-        return msg.content[0].text.strip()
-    except Exception as e:
-        return f"<p><em>[Errore generazione: {e}]</em></p>"
+    elif thanks:
+        corpo = (
+            "La ringrazio per il nostro recente incontro "
+            "e per la disponibilità che Le è propria."
+            if lei else
+            "Ti ringrazio per il nostro recente incontro, è sempre un piacere."
+        )
+    elif first:
+        corpo = (
+            "È con piacere che Le faccio pervenire per la prima volta "
+            "il nostro report settimanale sui mercati, "
+            "che speriamo possa essere di Suo interesse."
+            if lei else
+            "Con piacere ti mando per la prima volta "
+            "il nostro report settimanale sui mercati."
+        )
+    else:
+        corpo = ""
+
+    chiusura = (
+        "In allegato trova il report settimanale con la nostra analisi dei mercati finanziari."
+        if lei else
+        "In allegato trovi il report settimanale con la nostra analisi dei mercati finanziari."
+    )
+
+    parts = [f"<p>{saluto}</p>"]
+    if corpo:
+        parts.append(f"<p>{corpo}</p>")
+    parts.append(f"<p>{chiusura}</p>")
+    return "\n".join(parts)
 
 
 def build_full_email(pdf_html: str, intro_html: str = "") -> str:
@@ -633,69 +689,50 @@ if recipient_rows:
 
     st.markdown("---")
 
-    # ── Personalizzazione AI ───────────────────────────────────────────────────
-    has_api_key = bool(_secret("ANTHROPIC_API_KEY"))
+    # ── Personalizzazione ─────────────────────────────────────────────────────
+    st.markdown("**✍️ Personalizzazione introduzioni**")
+    st.caption(
+        "L'app legge le note dal file Excel e compone un'introduzione su misura: "
+        "saluto formale/informale, titolo (Dott., Prof., Ing…), "
+        "e azione specifica (appuntamento, follow-up, ringraziamento, primo invio…)."
+    )
 
-    if not has_api_key:
-        st.info(
-            "💡 **Personalizzazione AI non attiva.**  "
-            "Aggiungi `ANTHROPIC_API_KEY` nei Secrets dell'app per far scrivere a Claude "
-            "un'introduzione su misura (saluto, tono, proposta appuntamento...) "
-            "basata sulle note del file Excel."
-        )
-    else:
-        st.markdown("**🤖 Personalizzazione AI**")
-        st.caption(
-            "Claude legge le note dal file Excel e scrive per ogni destinatario "
-            "un'introduzione personalizzata: tono giusto (formale/informale), "
-            "contenuto specifico (appuntamento, follow-up, ringraziamento…)."
-        )
-
-        gen_disabled = not subject.strip()
-        if st.button(
-            "✨ Genera anteprime personalizzate",
-            key="btn_gen_intros",
-            disabled=gen_disabled,
-        ):
-            intros = {}
-            prog = st.progress(0.0, text="Generazione introduzioni con Claude…")
-            for i, rec in enumerate(recipient_rows):
-                prog.progress(
-                    (i + 1) / n_tot,
-                    text=f"Generazione {i+1}/{n_tot} — {rec['nome_display']}",
-                )
-                intros[i] = generate_intro(
-                    rec.get("nome1", ""), rec.get("cog1", ""),
-                    rec.get("nome2", ""), rec.get("cog2", ""),
-                    rec.get("azienda", ""), rec.get("note", ""),
-                    subject,
-                )
-            prog.empty()
-            st.session_state["intros"] = intros
-            st.rerun()
-
-        if gen_disabled:
-            st.caption("⚠️ Inserisci prima l'oggetto per generare le anteprime.")
-
-        if "intros" in st.session_state and st.session_state["intros"]:
-            st.success(
-                f"✅ {len(st.session_state['intros'])} introduzioni generate — "
-                "revisionali e modificale qui sotto prima di creare le bozze."
+    gen_disabled = not subject.strip()
+    if st.button(
+        "✨ Genera anteprime personalizzate",
+        key="btn_gen_intros",
+        disabled=gen_disabled,
+        help="Inserisci prima l'oggetto della mail" if gen_disabled else "",
+    ):
+        intros = {}
+        for i, rec in enumerate(recipient_rows):
+            intros[i] = generate_intro_local(
+                rec.get("nome1", ""), rec.get("cog1", ""),
+                rec.get("nome2", ""), rec.get("cog2", ""),
+                rec.get("azienda", ""), rec.get("note", ""),
             )
-            with st.expander("📝 Revisiona / modifica le introduzioni", expanded=True):
-                for i, rec in enumerate(recipient_rows):
-                    st.markdown(f"**{rec['nome_display']}**")
-                    if rec.get("note"):
-                        st.caption(f"Note originali: *{rec['note']}*")
-                    current = st.session_state["intros"].get(i, "")
-                    st.text_area(
-                        "Introduzione generata (HTML)",
-                        value=current,
-                        height=110,
-                        key=f"intro_edit_{i}",
-                        label_visibility="collapsed",
-                    )
-                    st.markdown('<div class="row-sep"></div>', unsafe_allow_html=True)
+        st.session_state["intros"] = intros
+        st.rerun()
+
+    if "intros" in st.session_state and st.session_state["intros"]:
+        st.success(
+            f"✅ {len(st.session_state['intros'])} introduzioni pronte — "
+            "revisionale e modificale qui sotto prima di creare le bozze."
+        )
+        with st.expander("📝 Revisiona / modifica le introduzioni", expanded=True):
+            for i, rec in enumerate(recipient_rows):
+                st.markdown(f"**{rec['nome_display']}**")
+                if rec.get("note"):
+                    st.caption(f"Note: *{rec['note']}*")
+                current = st.session_state["intros"].get(i, "")
+                st.text_area(
+                    "Introduzione",
+                    value=current,
+                    height=110,
+                    key=f"intro_edit_{i}",
+                    label_visibility="collapsed",
+                )
+                st.markdown('<div class="row-sep"></div>', unsafe_allow_html=True)
 
     st.markdown("---")
 
