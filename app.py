@@ -29,7 +29,7 @@ try:
 except ImportError:
     GOOGLE_OK = False
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.drafts.create"]
+SCOPES = ["https://www.googleapis.com/auth/gmail.compose"]
 SKIP_SHEETS = {"Istruzioni"}
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -88,7 +88,8 @@ st.markdown("""
 # ── Secrets ───────────────────────────────────────────────────────────────────
 def _secret(key, default=""):
     try:
-        return st.secrets.get(key, default)
+        val = st.secrets.get(key, default)
+        return val.strip() if isinstance(val, str) else val
     except Exception:
         return default
 
