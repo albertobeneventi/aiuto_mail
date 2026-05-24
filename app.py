@@ -336,13 +336,13 @@ else:
         if flow:
             auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
             st.session_state["pending_oauth"] = True
-            st.markdown(
-                f'<a href="{auth_url}" target="_self" style="'
-                "display:inline-block;background:#c0392b;color:#fff;padding:0.55rem 1.4rem;"
-                "border-radius:7px;text-decoration:none;font-weight:700;font-size:1rem;"
-                '">→ Vai a Google per autorizzare</a>',
-                unsafe_allow_html=True,
-            )
+            st.session_state["auth_url"] = auth_url
+
+    if st.session_state.get("auth_url") and not st.session_state.get("credentials"):
+        auth_url = st.session_state["auth_url"]
+        st.link_button("→ Vai a Google per autorizzare", auth_url, type="primary")
+        with st.expander("🔍 Debug — URL di autorizzazione", expanded=False):
+            st.code(auth_url)
     st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
