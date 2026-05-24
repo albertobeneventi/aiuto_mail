@@ -669,12 +669,6 @@ if recipient_rows:
         unsafe_allow_html=True,
     )
 
-    subject = st.text_input(
-        "Oggetto della mail",
-        placeholder="Report settimanale mercati — 23 maggio 2026",
-        key="subject",
-    )
-
     n_tot = len(recipient_rows)
     n_to  = sum(1 for r in recipient_rows if r["tipo"] == "to")
     n_bcc = sum(1 for r in recipient_rows if r["tipo"] == "bcc")
@@ -733,7 +727,15 @@ if recipient_rows:
 
     st.markdown("---")
 
-    # ── Crea bozze ────────────────────────────────────────────────────────────
+    # ── Oggetto + Crea bozze ──────────────────────────────────────────────────
+    st.markdown("**📧 Oggetto della mail**")
+    subject = st.text_input(
+        "Oggetto",
+        placeholder="Report settimanale mercati — 23 maggio 2026",
+        key="subject",
+        label_visibility="collapsed",
+    )
+
     missing = []
     if not pdf_html:
         missing.append("carica il PDF principale (Step ①)")
