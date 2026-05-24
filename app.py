@@ -338,14 +338,20 @@ else:
             st.session_state["pending_oauth"] = True
             st.session_state["auth_url"] = auth_url
 
-    if st.session_state.get("auth_url") and not st.session_state.get("credentials"):
+    if st.session_state.get("auth_url") and not st.session_state.get("credentials") and "code" not in st.query_params:
         auth_url = st.session_state["auth_url"]
-        st.markdown(
-            f'<a href="{auth_url}" target="_self" style="'
-            "display:inline-block;background:#c0392b;color:#fff;padding:0.55rem 1.4rem;"
-            "border-radius:7px;text-decoration:none;font-weight:700;font-size:1rem;"
-            '">→ Vai a Google per autorizzare</a>',
-            unsafe_allow_html=True,
+        import streamlit.components.v1 as components
+        components.html(
+            f"""<script>
+            function goAuth() {{ window.parent.location.href = "{auth_url}"; }}
+            </script>
+            <button onclick="goAuth()" style="
+                background:#c0392b;color:#fff;padding:10px 22px;
+                border:none;border-radius:7px;cursor:pointer;
+                font-size:15px;font-weight:700;font-family:sans-serif;">
+                → Vai a Google per autorizzare
+            </button>""",
+            height=55,
         )
     st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
