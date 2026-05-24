@@ -29,7 +29,7 @@ try:
 except ImportError:
     GOOGLE_OK = False
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.compose"]
+SCOPES = ["https://www.googleapis.com/auth/gmail.drafts.create"]
 SKIP_SHEETS = {"Istruzioni"}
 
 # ── Page config ───────────────────────────────────────────────────────────────
