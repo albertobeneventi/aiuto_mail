@@ -474,9 +474,9 @@ def generate_intro_local(nome1: str, cog1: str, nome2: str, cog2: str,
         corpo = ""
 
     chiusura = (
-        "In allegato trova il report settimanale con la nostra analisi dei mercati finanziari."
+        "In allegato trova il report settimanale con l'analisi dei mercati finanziari."
         if lei else
-        "In allegato trovi il report settimanale con la nostra analisi dei mercati finanziari."
+        "In allegato trovi il report settimanale con l'analisi dei mercati finanziari."
     )
 
     parts = [f"<p>{saluto}</p>"]
