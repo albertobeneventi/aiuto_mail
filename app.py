@@ -534,7 +534,7 @@ def build_mime_message(
     attachments: list,       # [(filename, bytes), ...]
 ) -> str:
     root = MIMEMultipart("mixed")
-    root["To"] = ", ".join(to_list) if to_list else ""
+    root["To"] = ", ".join(to_list) if to_list else "undisclosed-recipients:;"
     if bcc_list:
         root["Bcc"] = ", ".join(bcc_list)
     root["Subject"] = subject
