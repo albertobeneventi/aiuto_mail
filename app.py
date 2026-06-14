@@ -532,9 +532,13 @@ def build_mime_message(
     subject: str,
     html_body: str,          # HTML già personalizzato per questo destinatario
     attachments: list,       # [(filename, bytes), ...]
+    sender_email: str = "",  # usato come To quando to_list è vuota (BCC-only)
 ) -> str:
     root = MIMEMultipart("mixed")
-    root["To"] = ", ".join(to_list) if to_list else "undisclosed-recipients:;"
+    if to_list:
+        root["To"] = ", ".join(to_list)
+    elif sender_email:
+        root["To"] = sender_email   # Gmail richiede un To valido anche per BCC-only
     if bcc_list:
         root["Bcc"] = ", ".join(bcc_list)
     root["Subject"] = subject
@@ -655,6 +659,13 @@ REDIRECT_URI = "https://NOME-TUA-APP.streamlit.app"
 service = get_service()
 if service:
     st.markdown('<div class="auth-ok">✅ Gmail collegato — puoi creare bozze</div>', unsafe_allow_html=True)
+    # Recupera e memorizza l'email del mittente (serve come To nei messaggi solo-BCC)
+    if "sender_email" not in st.session_state:
+        try:
+            profile = service.users().getProfile(userId="me").execute()
+            st.session_state["sender_email"] = profile.get("emailAddress", "")
+        except Exception:
+            st.session_state["sender_email"] = ""
 else:
     st.markdown('<div class="auth-box">', unsafe_allow_html=True)
     st.markdown("**🔐 Collega il tuo account Gmail** per creare le bozze.")
@@ -999,6 +1010,7 @@ if recipient_rows:
                 raw_msg = build_mime_message(
                     to_list, bcc_list, subject,
                     full_html, attachments_data,
+                    sender_email=st.session_state.get("sender_email", ""),
                 )
                 service.users().drafts().create(
                     userId="me",
